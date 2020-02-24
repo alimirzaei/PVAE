@@ -5,8 +5,6 @@ from tensorflow.keras import metrics
 from keras.datasets import mnist
 import numpy as np
 import matplotlib.pyplot as plt
-from PermutationLayer import NaNHandlingLayer
-from scipy.sparse import random
 
 class VariationalAutoEncoder:
     """
@@ -28,7 +26,7 @@ class VariationalAutoEncoder:
     x_decoded = vae_obj.decoder.predict(z_sample, batch_size=batch_size)
     """
 
-    def __init__(self, input_size, d_layers, activation='relu', optimizer='adam', show_metrics=False, dropout=0.0):
+    def __init__(self, input_size, d_layers, activation='relu', optimizer='adam', show_metrics=False, dropout=0.0, model_address=None):
         # variables
         self.input_size = input_size
         self.layer_sizes = d_layers
@@ -36,21 +34,19 @@ class VariationalAutoEncoder:
         self.drop_prob = float(dropout)
         # building tensors
         self.input = Input(shape=(input_size,), name="encoder_input")
-        self.mask = Input(shape=(input_size,), name="encoder_mask")
-        
-        self.z_mean, self.z_var = self.create_encoder(self.input, self.mask, activation, self.drop_prob)
+        self.z_mean, self.z_var = self.create_encoder(self.input, activation, self.drop_prob)
         self.output, self.decoder = self.create_decoder(activation, self.drop_prob)
-        self.encoder = Model([self.input, self.mask], self.z_mean)
-        self.model = Model([self.input, self.mask], self.output)
+        self.encoder = Model(self.input, self.z_mean)
+        self.model = Model(self.input, self.output)
+        if model_address:
+            self.model.load_weights(model_address)
         self.optimizer = optimizer
         self.verbose = show_metrics
 
     
-    # def 
-    
     # returns two tensors, one for the encoding (z_mean), one for making the manifold smooth
-    def create_encoder(self, nn_input, mask_input, act, drop):
-        x = NaNHandlingLayer(32)([nn_input, mask_input])
+    def create_encoder(self, nn_input, act, drop):
+        x = nn_input
         for l in self.layer_sizes:
             x = Dense(l, activation=act)(x)
             if drop:
@@ -93,22 +89,29 @@ class VariationalAutoEncoder:
     def vae_loss(self, x, x_decoded_mean):
         xent_loss = self.reconstruction_loss(x, x_decoded_mean)
         kl_loss = self.kl_loss(x, x_decoded_mean)
-        return K.mean(xent_loss+kl_loss)
+        return K.mean(xent_loss + kl_loss)
 
     def reconstruction_loss(self, x, x_decoded_mean):
-        return  self.input_size*K.sum(K.square((x[0] - x_decoded_mean))*x[1])/K.sum(x[1])
+        return self.input_size * metrics.mse(x, x_decoded_mean)
 
     def kl_loss(self, x, x_decoded_mean):   # inputs are here so you can use it as a metric
-        return - 0.5 * K.mean(1 + self.z_var - K.square(self.z_mean) - K.exp(self.z_var), axis=-1)
+        return - 0.5 * K.sum(1 + self.z_var - K.square(self.z_mean) - K.exp(self.z_var), axis=-1)
 
     # builds and returns the model. This is how you get the model in your training code.
-    def compile(self):
+    def compile(self, modelAddress = None):
         met = []
         if self.verbose:
             met = [self.reconstruction_loss, self.kl_loss]
         self.model.compile(self.optimizer, loss=self.vae_loss, metrics=met)
+        if(modelAddress):
+            self.load(modelAddress)
         return self.model
     
+    def save(self, modelAddres = 'vae.h5'):
+        self.model.save_weights(modelAddres)
+    
+    def load(self, modelAddres = 'vae.h5'):
+        self.model.load_weights(modelAddres)
     
     def generateSamples(self):
         fig = plt.figure(figsize=(20, 20))
@@ -133,16 +136,13 @@ class VariationalAutoEncoder:
 
 
 if __name__ == '__main__':
-    vae_obj = VariationalAutoEncoder(28*28, [16], show_metrics=True)
+    vae_obj = VariationalAutoEncoder(28*28, [32, 16])
     vae = vae_obj.compile()
     (x_train, y_train), (x_test, y_test) = mnist.load_data()
     x = x_train.reshape(-1, 28*28) / 256.
     x_test = x_test.reshape(-1, 28*28) / 256.
-    mask = np.vstack([(random(1, x.shape[1],density=np.random.rand()).todense()>0).astype(np.float32) for instance in x])
-    vae.fit([x, mask],x,epochs=5)
-    
+    vae.fit(x,x,epochs=5)
     fig1 = vae_obj.generateSamples()
     fig1.savefig('fig1.png')
-    mask_test = np.random.randint(0, 2, x_test.shape)
-    fig2 = vae_obj.plotSamples([x_test, mask_test], y_test)
+    fig2 = vae_obj.plotSamples(x_test, y_test)
     fig2.savefig('fig2.png')
